@@ -1,0 +1,126 @@
+name: Deploy to Prod Environment
+
+on:
+  # push:
+  #   branches:
+  #     - "main"
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-southeast-1
+  ECR_REPOSITORY: google-workspace-mcp
+  DOCKERFILE_NAME: Dockerfile
+  TF_STATE_BUCKET: google-workspace-mcp-prod-terraform
+
+permissions:
+  contents: read
+
+jobs:
+  push-to-ecr:
+    name: Push Image to Amazon ECR
+    environment: prod
+    runs-on: self-hosted
+    outputs:
+      ecr_image_uri: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:prod
+      ecr_image_digest: ${{ steps.extract-digest.outputs.DIGEST }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build, Tag, and Push Image to Amazon ECR
+        id: build-image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_NAME }}
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:prod
+          cache-from: type=local,src=${{ runner.temp }}/.buildx-cache
+          cache-to: type=local,dest=${{ runner.temp }}/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        run: |
+          rm -rf ${{ runner.temp }}/.buildx-cache
+          mv ${{ runner.temp }}/.buildx-cache-new ${{ runner.temp }}/.buildx-cache
+
+      - name: Extract digest
+        id: extract-digest
+        run: |
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:prod"
+          DIGEST=$(aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=prod --query 'imageDetails[0].imageDigest' --output text)
+          echo "DIGEST=$DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Output Image Digest
+        run: echo "Image digest is ${{ steps.extract-digest.outputs.DIGEST }}"
+
+  terraform-deploy:
+    name: Run Terraform Apply
+    needs: push-to-ecr
+    runs-on: self-hosted
+    environment: prod
+    concurrency:
+      group: tf-deployment
+    defaults:
+      run:
+        working-directory: ./terraform
+    env:
+      TF_VAR_ENVIRONMENT: prod
+      TF_VAR_REMOTE_STATE_BUCKET: ${{ secrets.REMOTE_STATE_BUCKET }}
+      TF_VAR_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+      TF_VAR_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+      TF_VAR_WORKSPACE_EXTERNAL_URL: ${{ secrets.WORKSPACE_EXTERNAL_URL }}
+      TF_VAR_MCP_ENABLE_OAUTH21: "true"
+      TF_VAR_WORKSPACE_MCP_STATELESS_MODE: "true"
+      TF_VAR_WORKSPACE_MCP_PORT: "8000"
+      TF_VAR_CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_CLOUDFLARE_DOMAIN: ${{ secrets.CLOUDFLARE_DOMAIN }}
+      TF_VAR_CERTIFICATE_ARN: ${{ secrets.CERTIFICATE_ARN }}
+      TF_VAR_AWS_REGION: ${{ secrets.AWS_REGION }}
+      TF_VAR_ECR_REPO_URI: ${{ needs.push-to-ecr.outputs.ecr_image_uri }}
+      TF_VAR_ECR_IMAGE_DIGEST: ${{ needs.push-to-ecr.outputs.ecr_image_digest }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
+
+      - name: Terraform Plan
+        run: terraform plan -input=false
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -input=false
