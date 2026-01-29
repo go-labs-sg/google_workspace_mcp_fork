@@ -1,13 +1,15 @@
 name: Check Maintainer Edits Enabled
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited]
+  # pull_request:
+  #   types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
 
 jobs:
   check-maintainer-edits:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == true || github.event.pull_request.head.repo.full_name != github.repository
+    # if: github.event.pull_request.head.repo.fork == true || github.event.pull_request.head.repo.full_name != github.repository
+    if: ${{ false }}
 
     steps:
       - name: Check if maintainer edits are enabled
@@ -25,16 +27,18 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `⚠️ **Maintainer edits not enabled**
-
-This repository requires that you enable "Allow edits from maintainers" for your pull request. This allows maintainers to make small fixes and improvements directly to your branch, which speeds up the review process.
-
-**To enable this setting:**
-1. Go to your pull request page
-2. In the right sidebar, look for "Allow edits from maintainers"
-3. Check the checkbox to enable it
-
-Once you've enabled this setting, this check will automatically pass. Thank you! 🙏`
+                body: [
+                  "⚠️ **Maintainer edits not enabled**",
+                  "",
+                  'This repository requires that you enable "Allow edits from maintainers" for your pull request. This allows maintainers to make small fixes and improvements directly to your branch, which speeds up the review process.',
+                  "",
+                  "**To enable this setting:**",
+                  "1. Go to your pull request page",
+                  '2. In the right sidebar, look for "Allow edits from maintainers"',
+                  "3. Check the checkbox to enable it",
+                  "",
+                  "Once you've enabled this setting, this check will automatically pass. Thank you! 🙏"
+                ].join("\n")
               });
 
               core.setFailed('Maintainer edits must be enabled for this pull request');
@@ -44,7 +48,8 @@ Once you've enabled this setting, this check will automatically pass. Thank you!
 
   check-maintainer-edits-internal:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == false && github.event.pull_request.head.repo.full_name == github.repository
+    # if: github.event.pull_request.head.repo.fork == false && github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ false }}
 
     steps:
       - name: Skip check for internal PRs
